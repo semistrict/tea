@@ -92,6 +92,7 @@ var CmdPulls = cli.Command{
 		&pulls.CmdPullsApprove,
 		&pulls.CmdPullsReject,
 		&pulls.CmdPullsMerge,
+		&pulls.CmdPullsDiffOrder,
 	},
 }
 
