@@ -16,7 +16,6 @@ import (
 	"code.gitea.io/tea/modules/interact"
 	"code.gitea.io/tea/modules/print"
 	"code.gitea.io/tea/modules/utils"
-
 	"github.com/urfave/cli/v3"
 )
 
@@ -92,7 +91,8 @@ var CmdPulls = cli.Command{
 		&pulls.CmdPullsApprove,
 		&pulls.CmdPullsReject,
 		&pulls.CmdPullsMerge,
-		&pulls.CmdPullsDiffOrder,
+		&pulls.CmdPullsGuidedReview,
+		&pulls.CmdPullsImport,
 	},
 }
 

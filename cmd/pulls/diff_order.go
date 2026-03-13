@@ -16,41 +16,35 @@ import (
 	"code.gitea.io/tea/modules/api"
 	"code.gitea.io/tea/modules/context"
 	"code.gitea.io/tea/modules/utils"
-
 	"github.com/urfave/cli/v3"
 )
 
-type diffReviewOrderItem struct {
-	File      string `json:"file"`
-	HunkIndex *int   `json:"hunk_index,omitempty"`
-	Label     string `json:"label,omitempty"`
+type guidedReviewRequest struct {
+	Content string `json:"content"`
 }
 
-type diffReviewOrderRequest struct {
-	Items []*diffReviewOrderItem `json:"items"`
+type guidedReviewResponse struct {
+	Content   string `json:"content"`
+	UpdatedAt string `json:"updated_at"`
 }
 
-type diffReviewOrderResponse struct {
-	Items     []*diffReviewOrderItem `json:"items"`
-	UpdatedAt string                 `json:"updated_at"`
-}
-
-// CmdPullsDiffOrder manages diff review order for a pull request
-var CmdPullsDiffOrder = cli.Command{
-	Name:        "diff-order",
-	Usage:       "Manage the diff review order for a pull request",
-	Description: "Get, set, or delete the custom review order that controls how files and hunks are displayed in the diff view",
+// CmdPullsGuidedReview manages guided review for a pull request
+var CmdPullsGuidedReview = cli.Command{
+	Name:        "guided-review",
+	Aliases:     []string{"gr"},
+	Usage:       "Manage the guided review for a pull request",
+	Description: "Get, set, or delete the guided review document that controls how the diff is presented to reviewers",
 	Commands: []*cli.Command{
-		&cmdDiffOrderGet,
-		&cmdDiffOrderSet,
-		&cmdDiffOrderDelete,
-		&cmdDiffOrderListHunks,
+		&cmdGuidedReviewGet,
+		&cmdGuidedReviewSet,
+		&cmdGuidedReviewDelete,
+		&cmdGuidedReviewListHunks,
 	},
 }
 
-var cmdDiffOrderGet = cli.Command{
+var cmdGuidedReviewGet = cli.Command{
 	Name:      "get",
-	Usage:     "Get the diff review order for a pull request",
+	Usage:     "Get the guided review for a pull request",
 	ArgsUsage: "<pull index>",
 	Action: func(_ stdctx.Context, cmd *cli.Command) error {
 		ctx := context.InitCommand(cmd)
@@ -65,7 +59,7 @@ var cmdDiffOrderGet = cli.Command{
 		}
 
 		client := api.NewClient(ctx.Login)
-		endpoint := fmt.Sprintf("/repos/%s/%s/pulls/%d/diff-order", ctx.Owner, ctx.Repo, idx)
+		endpoint := fmt.Sprintf("/repos/%s/%s/pulls/%d/guided-review", ctx.Owner, ctx.Repo, idx)
 		resp, err := client.Do("GET", endpoint, nil, nil)
 		if err != nil {
 			return err
@@ -81,50 +75,34 @@ var cmdDiffOrderGet = cli.Command{
 			return fmt.Errorf("API error %d: %s", resp.StatusCode, string(body))
 		}
 
-		var order diffReviewOrderResponse
-		if err := json.Unmarshal(body, &order); err != nil {
+		var review guidedReviewResponse
+		if err := json.Unmarshal(body, &review); err != nil {
 			return err
 		}
 
-		if len(order.Items) == 0 {
-			fmt.Println("No custom review order set for this pull request.")
+		if review.Content == "" {
+			fmt.Println("No guided review set for this pull request.")
 			return nil
 		}
 
-		fmt.Printf("Review order (updated %s):\n\n", order.UpdatedAt)
-		for i, item := range order.Items {
-			prefix := fmt.Sprintf("  %d. ", i+1)
-			if item.HunkIndex != nil {
-				fmt.Printf("%s%s (hunk %d)", prefix, item.File, *item.HunkIndex)
-			} else {
-				fmt.Printf("%s%s", prefix, item.File)
-			}
-			if item.Label != "" {
-				// Show first line of label inline
-				firstLine := strings.SplitN(item.Label, "\n", 2)[0]
-				fmt.Printf("  — %s", firstLine)
-			}
-			fmt.Println()
-		}
+		fmt.Printf("Guided review (updated %s):\n\n", review.UpdatedAt)
+		fmt.Println(review.Content)
 		return nil
 	},
 	Flags: flags.AllDefaultFlags,
 }
 
-var cmdDiffOrderSet = cli.Command{
+var cmdGuidedReviewSet = cli.Command{
 	Name:  "set",
-	Usage: "Set the diff review order for a pull request",
-	Description: `Set a custom order for files and hunks in a PR diff view.
+	Usage: "Set the guided review for a pull request",
+	Description: `Set a guided review document for a PR. The document is markdown with
+embedded diff-hunk blocks that reference specific hunks.
 
-Specify files in the order you want reviewers to see them.
-Use --file/-f to add files in order, with optional labels after a colon.
-Use --hunk/-H to specify hunk-level ordering as file:index or file:index:label.
+Read from a file with --from-file or pipe from stdin with --from-file -.
 
 Examples:
-  tea pulls diff-order set 1 -f "pkg/types.go:Start here" -f pkg/handler.go -f tests/handler_test.go
-  tea pulls diff-order set 1 -f pkg/handler.go -H "pkg/handler.go:2:Core change" -H "pkg/handler.go:0:Imports"
-  tea pulls diff-order set 1 --from-json order.json
-  cat order.json | tea pulls diff-order set 1 --from-json -`,
+  tea pulls guided-review set 1 --from-file review.md
+  cat review.md | tea pulls guided-review set 1 --from-file -`,
 	ArgsUsage: "<pull index>",
 	Action: func(_ stdctx.Context, cmd *cli.Command) error {
 		ctx := context.InitCommand(cmd)
@@ -138,70 +116,34 @@ Examples:
 			return err
 		}
 
-		var items []*diffReviewOrderItem
+		fromFile := cmd.String("from-file")
+		if fromFile == "" {
+			return fmt.Errorf("must specify --from-file (use - for stdin)")
+		}
 
-		// If --from-json is provided, read items from a JSON file or stdin
-		jsonFile := cmd.String("from-json")
-		if jsonFile != "" {
-			var data []byte
-			var err error
-			if jsonFile == "-" {
-				data, err = io.ReadAll(os.Stdin)
-			} else {
-				data, err = os.ReadFile(jsonFile)
-			}
-			if err != nil {
-				return fmt.Errorf("failed to read %s: %w", jsonFile, err)
-			}
-			var req diffReviewOrderRequest
-			if err := json.Unmarshal(data, &req); err != nil {
-				return fmt.Errorf("failed to parse JSON: %w", err)
-			}
-			items = req.Items
+		var data []byte
+		if fromFile == "-" {
+			data, err = io.ReadAll(os.Stdin)
 		} else {
-			// Build items from --file and --hunk flags
-			for _, f := range cmd.StringSlice("file") {
-				parts := strings.SplitN(f, ":", 2)
-				item := &diffReviewOrderItem{File: parts[0]}
-				if len(parts) == 2 {
-					item.Label = parts[1]
-				}
-				items = append(items, item)
-			}
-
-			for _, h := range cmd.StringSlice("hunk") {
-				parts := strings.SplitN(h, ":", 3)
-				if len(parts) < 2 {
-					return fmt.Errorf("invalid hunk format %q, expected file:index or file:index:label", h)
-				}
-				hunkIdx, err := utils.ArgToIndex(parts[1])
-				if err != nil {
-					return fmt.Errorf("invalid hunk index in %q: %w", h, err)
-				}
-				idx := int(hunkIdx)
-				item := &diffReviewOrderItem{
-					File:      parts[0],
-					HunkIndex: &idx,
-				}
-				if len(parts) == 3 {
-					item.Label = parts[2]
-				}
-				items = append(items, item)
-			}
+			data, err = os.ReadFile(fromFile)
+		}
+		if err != nil {
+			return fmt.Errorf("failed to read %s: %w", fromFile, err)
 		}
 
-		if len(items) == 0 {
-			return fmt.Errorf("no items specified. Use --file, --hunk, or --from-json")
+		content := strings.TrimSpace(string(data))
+		if content == "" {
+			return fmt.Errorf("guided review content is empty")
 		}
 
-		reqBody := diffReviewOrderRequest{Items: items}
+		reqBody := guidedReviewRequest{Content: content}
 		bodyBytes, err := json.Marshal(reqBody)
 		if err != nil {
 			return err
 		}
 
 		client := api.NewClient(ctx.Login)
-		endpoint := fmt.Sprintf("/repos/%s/%s/pulls/%d/diff-order", ctx.Owner, ctx.Repo, idx)
+		endpoint := fmt.Sprintf("/repos/%s/%s/pulls/%d/guided-review", ctx.Owner, ctx.Repo, idx)
 		resp, err := client.Do("PUT", endpoint, bytes.NewReader(bodyBytes), nil)
 		if err != nil {
 			return err
@@ -217,23 +159,13 @@ Examples:
 			return fmt.Errorf("API error %d: %s", resp.StatusCode, string(respBody))
 		}
 
-		fmt.Printf("Review order set with %d items.\n", len(items))
+		fmt.Println("Guided review set.")
 		return nil
 	},
 	Flags: append([]cli.Flag{
-		&cli.StringSliceFlag{
-			Name:    "file",
-			Aliases: []string{"f"},
-			Usage:   "Add a file in order (format: path or path:label)",
-		},
-		&cli.StringSliceFlag{
-			Name:    "hunk",
-			Aliases: []string{"H"},
-			Usage:   "Add a hunk in order (format: path:index or path:index:label)",
-		},
 		&cli.StringFlag{
-			Name:  "from-json",
-			Usage: "Read order items from a JSON file (use - for stdin)",
+			Name:  "from-file",
+			Usage: "Read guided review markdown from a file (use - for stdin)",
 		},
 	}, flags.AllDefaultFlags...),
 }
@@ -256,19 +188,19 @@ type diffFileHunksResponse struct {
 	Files []*diffFileHunks `json:"files"`
 }
 
-var cmdDiffOrderListHunks = cli.Command{
+var cmdGuidedReviewListHunks = cli.Command{
 	Name:      "list-hunks",
 	Aliases:   []string{"hunks"},
 	Usage:     "List hunks for files in a pull request diff",
 	ArgsUsage: "<pull index> [file]",
 	Description: `Shows the hunks (sections) for each file in a PR diff with their index,
-line range, and change count. Use this to plan hunk-level reordering.
+line range, and change count. Use this to plan the guided review document.
 
 If a file path is given, only show hunks for that file.
 
 Examples:
-  tea pulls diff-order list-hunks 2
-  tea pulls diff-order list-hunks 2 big_file.go`,
+  tea pulls guided-review list-hunks 2
+  tea pulls guided-review list-hunks 2 big_file.go`,
 	Action: func(_ stdctx.Context, cmd *cli.Command) error {
 		ctx := context.InitCommand(cmd)
 		ctx.Ensure(context.CtxRequirement{RemoteRepo: true})
@@ -287,7 +219,7 @@ Examples:
 		}
 
 		client := api.NewClient(ctx.Login)
-		endpoint := fmt.Sprintf("/repos/%s/%s/pulls/%d/diff-order/hunks", ctx.Owner, ctx.Repo, idx)
+		endpoint := fmt.Sprintf("/repos/%s/%s/pulls/%d/guided-review/hunks", ctx.Owner, ctx.Repo, idx)
 		resp, err := client.Do("GET", endpoint, nil, nil)
 		if err != nil {
 			return err
@@ -323,10 +255,10 @@ Examples:
 	Flags: flags.AllDefaultFlags,
 }
 
-var cmdDiffOrderDelete = cli.Command{
+var cmdGuidedReviewDelete = cli.Command{
 	Name:      "delete",
 	Aliases:   []string{"rm"},
-	Usage:     "Delete the diff review order for a pull request",
+	Usage:     "Delete the guided review for a pull request",
 	ArgsUsage: "<pull index>",
 	Action: func(_ stdctx.Context, cmd *cli.Command) error {
 		ctx := context.InitCommand(cmd)
@@ -341,7 +273,7 @@ var cmdDiffOrderDelete = cli.Command{
 		}
 
 		client := api.NewClient(ctx.Login)
-		endpoint := fmt.Sprintf("/repos/%s/%s/pulls/%d/diff-order", ctx.Owner, ctx.Repo, idx)
+		endpoint := fmt.Sprintf("/repos/%s/%s/pulls/%d/guided-review", ctx.Owner, ctx.Repo, idx)
 		resp, err := client.Do("DELETE", endpoint, nil, nil)
 		if err != nil {
 			return err
@@ -353,7 +285,7 @@ var cmdDiffOrderDelete = cli.Command{
 			return fmt.Errorf("API error %d: %s", resp.StatusCode, string(body))
 		}
 
-		fmt.Println("Review order deleted.")
+		fmt.Println("Guided review deleted.")
 		return nil
 	},
 	Flags: flags.AllDefaultFlags,
